@@ -35,7 +35,6 @@ const kRealListen = Symbol("kRealListen");
 const noBodySymbol = Symbol("noBody");
 const optionsSymbol = Symbol("options");
 const tlsSymbol = Symbol("tls");
-const typeSymbol = Symbol("type");
 const kAbortController = Symbol.for("kAbortController");
 const kInternalSocketData = Symbol.for("::bunternal::");
 const serverSymbol = Symbol.for("::bunternal::");
@@ -65,11 +64,6 @@ export const enum NodeHTTPResponseAbortEvent {
   abort = 1,
   timeout = 2,
   readParsed = 3,
-}
-export const enum NodeHTTPIncomingRequestType {
-  FetchRequest,
-  FetchResponse,
-  NodeHTTPResponse,
 }
 export const enum NodeHTTPBodyReadState {
   none,
@@ -208,14 +202,6 @@ function onDataIncomingMessage(this: any, chunk, isLast, aborted: NodeHTTPRespon
     // socket's flowing=false, which would swallow the next request's 'pause'.
     if (!this.upgrade && socket && !socket._paused && socket.readable) socket.resume();
   }
-}
-
-function validateMsecs(numberlike: any, field: string) {
-  if (typeof numberlike !== "number" || numberlike < 0) {
-    throw $ERR_INVALID_ARG_TYPE(field, "number", numberlike);
-  }
-
-  return numberlike;
 }
 
 const METHODS = [
@@ -400,6 +386,15 @@ function ipToInt(ip) {
   return result >>> 0;
 }
 
+// Node prints these raw (nodejs/node@3e9954a88b lib/internal/http.js#L114). An unescaped "/" in a password ends the authority early, so cut at the last "@".
+function redactInvalidProxyUrl(proxyUrl) {
+  proxyUrl = `${proxyUrl}`;
+  const userinfoEnd = proxyUrl.lastIndexOf("@");
+  if (userinfoEnd === -1) return proxyUrl;
+  const scheme = /^[a-z][a-z0-9+.-]*:\/\//i.exec(proxyUrl);
+  return (scheme === null ? "" : scheme[0]) + proxyUrl.slice(userinfoEnd + 1);
+}
+
 class ProxyConfig {
   href;
   protocol;
@@ -412,11 +407,18 @@ class ProxyConfig {
     try {
       parsedURL = new URL(proxyUrl);
     } catch {
-      throw $ERR_PROXY_INVALID_CONFIG(`Invalid proxy URL: ${proxyUrl}`);
+      throw $ERR_PROXY_INVALID_CONFIG(`Invalid proxy URL: ${redactInvalidProxyUrl(proxyUrl)}`);
     }
     const { hostname, port, protocol, username, password } = parsedURL;
 
-    this.href = proxyUrl;
+    // `href` ends up in ERR_PROXY_TUNNEL messages, so it must not carry the credentials.
+    if (username || password) {
+      parsedURL.username = "";
+      parsedURL.password = "";
+      this.href = parsedURL.href;
+    } else {
+      this.href = proxyUrl;
+    }
     this.protocol = protocol;
 
     if (username || password) {
@@ -492,7 +494,7 @@ function parseProxyUrl(env, protocol) {
   }
 
   if (proxyUrl.includes("\r") || proxyUrl.includes("\n")) {
-    throw $ERR_PROXY_INVALID_CONFIG(`Invalid proxy URL: ${proxyUrl}`);
+    throw $ERR_PROXY_INVALID_CONFIG(`Invalid proxy URL: ${redactInvalidProxyUrl(proxyUrl)}`);
   }
 
   return proxyUrl;
@@ -551,13 +553,12 @@ export {
   optionsSymbol,
   parseProxyConfigFromEnv,
   parseProxyUrl,
+  redactInvalidProxyUrl,
   serverSymbol,
   setMaxHTTPHeaderSize,
   setServerAppFlags,
   setServerCustomOptions,
   setServerMaxHeadersCount,
   tlsSymbol,
-  typeSymbol,
   utcDate,
-  validateMsecs,
 };
