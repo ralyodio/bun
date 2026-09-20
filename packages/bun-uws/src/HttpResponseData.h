@@ -157,6 +157,8 @@ struct HttpResponseData : AsyncSocketData<SSL>, HttpParser {
          * that runs after it (microtasks, the request body callback) can block,
          * reset the connection or end the process. */
         HTTP_SEND_WHEN_COMPLETE = 1 << 18,
+        /* node:http: JavaScript destroyed this socket during its parse. Closed at the current message's last body chunk, or when the read is consumed, like Node's parser. */
+        HTTP_NODE_CLOSE_AFTER_MESSAGE = 1 << 20,
 
         /* Bits that describe the connection rather than the response in flight.
          * There is one HttpResponseData per socket, reused by every request on a
@@ -166,7 +168,8 @@ struct HttpResponseData : AsyncSocketData<SSL>, HttpParser {
         HTTP_NODE_NOTIFY_READ_PARSED = 1 << 19,
 
         HTTP_CONNECTION_SCOPED = HTTP_NODE_PARSING_STOPPED | HTTP_NODE_READS_PAUSED
-            | HTTP_NODE_TUNNEL_AFTER_BODY | HTTP_NODE_RECEIVED_FIN | HTTP_CLOSE_WHEN_IDLE,
+            | HTTP_NODE_TUNNEL_AFTER_BODY | HTTP_NODE_RECEIVED_FIN | HTTP_CLOSE_WHEN_IDLE
+            | HTTP_NODE_CLOSE_AFTER_MESSAGE,
     };
 
     /* Begin a new response on this connection. Clearing the word in one go is
