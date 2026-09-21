@@ -6937,3 +6937,31 @@ it("connectionListener applies the server's joinDuplicateHeaders option like the
     }).toEqual({ options, emitted: expected, listening: expected });
   }
 });
+
+it("req.socket.setKeepAlive() and resetAndDestroy() return the socket", async () => {
+  const { promise, resolve, reject } = Promise.withResolvers<{ setKeepAlive: boolean; resetAndDestroy: boolean }>();
+  const server = createServer((req, res) => {
+    try {
+      const socket = req.socket;
+      resolve({
+        setKeepAlive: socket.setKeepAlive(true).setNoDelay(true) === socket,
+        resetAndDestroy: socket.resetAndDestroy() === socket,
+      });
+    } catch (e) {
+      reject(e);
+    }
+    res.end();
+  });
+  try {
+    await once(server.listen(0), "listening");
+    // resetAndDestroy() resets the connection in node, so the request itself may fail.
+    const request = fetch(`http://localhost:${(server.address() as AddressInfo).port}/`).then(
+      response => response.text(),
+      () => {},
+    );
+    expect(await promise).toEqual({ setKeepAlive: true, resetAndDestroy: true });
+    await request;
+  } finally {
+    server.close();
+  }
+});
