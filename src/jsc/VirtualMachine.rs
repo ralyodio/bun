@@ -789,6 +789,7 @@ impl ExitHandler {
         let exit_code = vm.exit_handler.exit_code;
         // `process.on('exit')` handlers are user script (see `on_exit`).
         if vm.script_allowed() && !vm.exit_handler.skip_exit_listeners {
+            let _entered = vm.enter_event_loop_scope_without_checkpoint();
             Process__dispatchOnExit(vm.global(), exit_code);
         }
         if vm.worker.is_none() {
@@ -804,6 +805,7 @@ impl ExitHandler {
         }
         let exit_code = vm.exit_handler.exit_code;
         let global = vm.global();
+        let _entered = vm.enter_event_loop_scope_without_checkpoint();
         let _ = jsc::from_js_host_call_generic(global, || {
             Process__dispatchOnBeforeExit(global, exit_code)
         });
@@ -2094,6 +2096,7 @@ impl VirtualMachine {
             return true;
         }
 
+        let entered = self.enter_event_loop_scope_without_checkpoint();
         // An exception thrown by a Bun.ModuleGraph's module code is that graph's to
         // handle, ahead of the test runner and the thread-wide path. (A rejection
         // re-entering here under --unhandled-rejections=strict/throw was already judged.)
@@ -2102,6 +2105,8 @@ impl VirtualMachine {
         }
 
         if isBunTest.load(core::sync::atomic::Ordering::Relaxed) {
+            // The runner can start the next test from here: it runs with the count the runner has.
+            drop(entered);
             self.unhandled_error_counter += 1;
             (self.on_unhandled_rejection)(self, global_object, err);
             return true;
@@ -4340,6 +4345,7 @@ impl VirtualMachine {
             return;
         }
 
+        let entered = self.enter_event_loop_scope_without_checkpoint();
         if owner.is_cell()
             && Bun__ModuleGraph__handleUnhandledRejection(global_object, reason, owner)
         {
@@ -4348,6 +4354,8 @@ impl VirtualMachine {
         }
 
         if isBunTest.load(core::sync::atomic::Ordering::Relaxed) {
+            // As in `uncaught_exception`.
+            drop(entered);
             self.unhandled_error_counter += 1;
             (self.on_unhandled_rejection)(self, global_object, reason);
             return;
