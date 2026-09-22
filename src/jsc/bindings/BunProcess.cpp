@@ -862,11 +862,13 @@ extern "C" void Process__dispatchOnBeforeExit(Zig::GlobalObject* globalObject, u
     auto fired = process->wrapped().emit(Identifier::fromString(vm, "beforeExit"_s), arguments);
     RETURN_IF_EXCEPTION(scope, );
     if (fired) {
-        if (globalObject->m_nextTickQueue) {
-            auto nextTickQueue = globalObject->m_nextTickQueue.get();
+        // Draining the nextTick queue runs the promise jobs as well. A program that never touched
+        // process.nextTick has no queue, and its listeners can still have queued promise jobs.
+        if (auto* nextTickQueue = globalObject->m_nextTickQueue.get())
             nextTickQueue->drain(vm, globalObject);
-            RETURN_IF_EXCEPTION(scope, );
-        }
+        else
+            vm.drainMicrotasks();
+        RETURN_IF_EXCEPTION(scope, );
     }
 }
 
