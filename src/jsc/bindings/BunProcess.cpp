@@ -862,8 +862,7 @@ extern "C" void Process__dispatchOnBeforeExit(Zig::GlobalObject* globalObject, u
     auto fired = process->wrapped().emit(Identifier::fromString(vm, "beforeExit"_s), arguments);
     RETURN_IF_EXCEPTION(scope, );
     if (fired) {
-        // Draining the nextTick queue runs the promise jobs as well. A program that never touched
-        // process.nextTick has no queue, and its listeners can still have queued promise jobs.
+        // The queue exists once process.nextTick was read. Its drain runs the promise jobs too.
         if (auto* nextTickQueue = globalObject->m_nextTickQueue.get())
             nextTickQueue->drain(vm, globalObject);
         else
