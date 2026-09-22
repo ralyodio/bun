@@ -129,8 +129,19 @@ void transformStreamError(JSGlobalObject* globalObject, JSTransformStream* strea
     auto& vm = getVM(globalObject);
     auto scope = DECLARE_THROW_SCOPE(vm);
     if (auto* readableController = transformReadableController(stream)) {
-        readableStreamDefaultControllerError(globalObject, readableController, error);
-        RETURN_IF_EXCEPTION(scope, void());
+        // A decompression step starts with the readable's queue empty, so what is queued now is
+        // the output of the step that failed: it was decoded ahead of trailing junk. Erroring the
+        // readable would discard it. The reader gets it first, and the source's pull algorithm,
+        // which runs once the queue is empty, errors the readable. The writable fails at once.
+        bool outputIsQueued = stream->m_controller->m_transformerKind == TransformerKind::Decompression
+            && readableStreamDefaultControllerCanCloseOrEnqueue(readableController)
+            && !readableController->m_queue.isEmpty();
+        if (outputIsQueued)
+            stream->m_readableErrorAfterQueue.set(vm, stream, error);
+        else {
+            readableStreamDefaultControllerError(globalObject, readableController, error);
+            RETURN_IF_EXCEPTION(scope, void());
+        }
     }
     RELEASE_AND_RETURN(scope, transformStreamErrorWritableAndUnblockWrite(globalObject, stream, error));
 }
@@ -278,6 +289,15 @@ JSPromise* transformStreamDefaultSourcePullAlgorithm(JSGlobalObject* globalObjec
 {
     auto& vm = getVM(globalObject);
     auto scope = DECLARE_THROW_SCOPE(vm);
+    if (JSValue error = stream->m_readableErrorAfterQueue.get()) [[unlikely]] {
+        // The reader took the output that was queued ahead of this error (transformStreamError).
+        stream->m_readableErrorAfterQueue.clear();
+        if (auto* readableController = transformReadableController(stream)) {
+            readableStreamDefaultControllerError(globalObject, readableController, error);
+            RETURN_IF_EXCEPTION(scope, nullptr);
+        }
+        return nullptr;
+    }
     ASSERT(stream->m_backpressure);
     ASSERT(stream->m_backpressureChangePromise);
     transformStreamSetBackpressure(globalObject, stream, false);

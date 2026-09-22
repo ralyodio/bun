@@ -1321,11 +1321,13 @@ describe("bounded output per input chunk", () => {
       },
     );
 
-    // The junk follows an expansion that takes several steps. The reader paces
-    // those steps, so the junk is reported as one more step, after the reader has
-    // taken the last piece. Thrown together with that piece, the error would
-    // discard it from the readable queue for every reader that is not already
-    // waiting in read(): for await, pipeTo, or a loop that yields between reads.
+    // The last piece of the output can be enqueued with no read pending: from the
+    // readable's pull (a later step of the chunk), or from a write that waited for
+    // the reader. It sits in the readable's queue when the junk error comes. The
+    // writable side fails at once. The readable side hands the piece out first and
+    // fails when the consumer asks for more. An error that reset the queue would
+    // lose the piece for every reader that is not already waiting in read():
+    // for await, pipeTo, a loop that yields between reads, a reader attached late.
     const consumers = {
       "a read loop": readUntilError,
       "a read loop that yields between reads": async (readable: ReadableStream<Uint8Array>) => {
@@ -1400,7 +1402,77 @@ describe("bounded output per input chunk", () => {
       );
     });
 
-    // The error is thrown in the transform call that met the junk, never held
+    // The junk comes in the first step of a later write. That write waited for the
+    // reader, and a consumer that has not called read() again by then (pipeTo,
+    // for await) finds the piece queued. Three quarters noise: the compressed stream
+    // is long enough to split. One quarter text: the last write still has output.
+    describe.each([
+      ["64 KiB", kDefaultHighWaterMark],
+      ["1 KiB", 1024],
+    ] as const)("junk at the end of a stream written in %s writes", (_, writeSize) => {
+      const mixed = Buffer.alloc(100_000);
+      for (let i = 0, x = 1; i < mixed.length; i++) {
+        x = (Math.imul(x, 1664525) + 1013904223) >>> 0;
+        mixed[i] = (i & 8191) < 6144 ? x >>> 24 : 97 + (i % 7);
+      }
+
+      test.each(formats.flatMap(format => Object.keys(consumers).map(consumer => [format, consumer] as const)))(
+        "DecompressionStream(%s) read by %s",
+        async (format, consumer) => {
+          const input = Buffer.concat([bombs[format](mixed), Buffer.alloc(1)]);
+          const ds = new DecompressionStream(format);
+          const writer = ds.writable.getWriter();
+          for (let offset = 0; offset < input.byteLength; offset += writeSize) {
+            writer.write(input.subarray(offset, offset + writeSize)).catch(() => {});
+          }
+          writer.close().catch(() => {});
+
+          const { output, error } = await consumers[consumer as keyof typeof consumers](ds.readable);
+          expect(output.byteLength).toBe(mixed.byteLength);
+          expect(output.equals(mixed)).toBe(true);
+          expect(error).toMatchObject(trailingJunk);
+        },
+      );
+    });
+
+    // The writable side does not wait for the reader: the write fails at once,
+    // and the output stays queued for a consumer that attaches later.
+    describe.each([
+      ["one step", () => Buffer.from("hello hello hello hello")],
+      ["a >128 KiB chunk (thread-pool path)", () => randomBytes(200 * 1024)],
+    ] as const)("a consumer attached after the write failed, %s", (_, makePlain) => {
+      async function failedWrite(format: keyof typeof bombs) {
+        const plain = makePlain();
+        const ds = new DecompressionStream(format);
+        const writer = ds.writable.getWriter();
+        const failure = await rejection(writer.write(Buffer.concat([bombs[format](plain), junk])));
+        expect(failure).toMatchObject(trailingJunk);
+        return { plain, readable: ds.readable, failure };
+      }
+
+      test.each(formats)("DecompressionStream(%s): a read loop", async format => {
+        const { plain, readable, failure } = await failedWrite(format);
+        const { output, error } = await readUntilError(readable);
+        expect(output.equals(plain)).toBe(true);
+        expect(error).toBe(failure);
+      });
+
+      // The native sink pump takes what is queued, then reads again.
+      test("Bun.write(): the file gets the output, then the write rejects", async () => {
+        const { plain, readable } = await failedWrite("deflate");
+        using dir = tempDir("decompression-junk-late-sink", {});
+        const file = path.join(String(dir), "out.bin");
+        expect(await rejection(Bun.write(file, new Response(readable)))).toMatchObject(trailingJunk);
+        expect(Buffer.from(await Bun.file(file).bytes()).equals(plain)).toBe(true);
+      });
+
+      test("Response.bytes() rejects", async () => {
+        const { readable } = await failedWrite("deflate");
+        expect(await rejection(new Response(readable).bytes())).toMatchObject(trailingJunk);
+      });
+    });
+
+    // The writable side fails in the transform call that met the junk, never held
     // back until the output is read: with nobody reading, a held error would
     // leave this write, and a close() queued behind it, pending forever.
     test("with nobody reading, the write that carried the junk still rejects", async () => {
